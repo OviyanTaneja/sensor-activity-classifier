@@ -2,6 +2,8 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
+os.makedirs("sensor-activity-classifier/reports", exist_ok=True)
 
 # %% Set the base path to your dataset
 DATA_PATH = r"C:\Users\phant\Downloads\human+activity+recognition+using+smartphones\UCI HAR Dataset\UCI HAR Dataset"
@@ -332,7 +334,9 @@ plt.xlabel("Predicted")
 plt.ylabel("Actual")
 plt.title("Confusion Matrix — Activity Classification")
 plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/confusion_matrix.png", dpi=150, bbox_inches="tight")
 plt.show()
+
 
 # %% Get feature importances from the trained model
 importances = pd.Series(clf.feature_importances_, index=feature_cols)
@@ -346,6 +350,7 @@ importances_sorted.head(20).sort_values().plot(kind='barh')
 plt.xlabel("Feature Importance")
 plt.title("Top 20 Most Important Features — Random Forest")
 plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/feature_importance_overall.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %% Isolate standing and sitting rows only, train a focused mini-classifier
@@ -361,10 +366,11 @@ subset_importances_sorted = subset_importances.sort_values(ascending=False)
 
 print(subset_importances_sorted.head(15))
 
-# %% Visualize this focused importance ranking
+# %% Visualize focused importance ranking
 plt.figure(figsize=(10, 6))
 subset_importances_sorted.head(15).sort_values().plot(kind='barh', color='orange')
 plt.xlabel("Feature Importance")
 plt.title("Top Features Specifically Separating STANDING vs SITTING")
 plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/feature_importance_standing_vs_sitting.png", dpi=150, bbox_inches="tight")
 plt.show()
