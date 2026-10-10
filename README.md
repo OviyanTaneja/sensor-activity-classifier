@@ -1,77 +1,117 @@
-# Human Activity Recognition from Smartphone Sensor Data
+# Human Activity Recognition from Raw Smartphone Sensor Signals
 
-## Problem Statement
-Classify human activities (walking, sitting, standing, laying, walking up/down stairs) 
-from raw accelerometer and gyroscope signals, using engineered signal-processing 
-features and classical machine learning — built from raw signals, not pre-extracted 
-dataset features.
+Classifies six activities (walking, walking upstairs, walking downstairs, sitting,
+standing, laying) from raw accelerometer and gyroscope windows, using hand-engineered
+signal-processing features and classical ML. No pre-extracted dataset features are used.
+
+**Headline result:** 0.944 ± 0.023 macro-F1 (0.946 ± 0.021 accuracy) with XGBoost on
+112 engineered features, evaluated with subject-wise 5-fold cross-validation
+(no person appears in both train and test). Models were not hyperparameter-tuned.
 
 ## Dataset
-UCI HAR Dataset — 30 subjects, waist-mounted smartphone, 6 activities, 
-50Hz tri-axial accelerometer and gyroscope data. [link to dataset]
+[UCI HAR Dataset](https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones):
+30 subjects, waist-mounted smartphone, 50 Hz, 2.56 s windows (128 samples).
+The official train/test files were merged (their subjects do not overlap) for cross-validation.
 
 ## Approach
-1. Explored raw signal patterns manually to form hypotheses about discriminating 
-   features (see notebooks/01_signal_exploration.ipynb)
-2. Engineered 11 time- and frequency-domain features per axis (66 features total) 
-   from raw windowed signals — no pre-extracted dataset features used
-3. Trained and evaluated a Random Forest classifier using the dataset's official 
-   subject-independent train/test split
-4. Performed feature importance analysis to validate hypotheses and explain model behavior
+1. Explored raw signals visually and statistically to form hypotheses.
+2. Engineered features per window: 66 baseline (11 time/frequency features x 6 body
+   accelerometer/gyroscope axes), later extended to 112 (see ablation below).
+3. Evaluated with subject-independent validation and compared models on identical folds.
+4. Used confusion matrices and feature importance to diagnose errors, then tested fixes.
 
-## Key Results
-- Overall F1-scores ranging 0.82–0.91 across 6 activity classes
-- [confusion matrix image here]
-- Static vs. dynamic activities perfectly separated (0 misclassifications)
-- STANDING vs SITTING was the primary confusion pair — confirmed by manual signal 
-  analysis before modeling
+## 1. Evaluation: why subject-wise splitting matters
 
-## Key Finding: Gyroscope Dominates Standing vs Sitting Classification
-[Insert your feature importance chart here]
-Manual exploration suggested gyroscope data might better separate standing from 
-sitting than accelerometer data, since standing involves continuous postural 
-balance correction (small rotational adjustments) that sitting does not. This was 
-confirmed: a focused classifier trained only on standing vs sitting examples 
-ranked gyroscope-derived features (particularly body_gyro_x_std) as overwhelmingly 
-the most important, while accelerometer features — dominant in the overall 
-6-class model — contributed comparatively little to this specific distinction.
-
-## Evaluation: subject-independent cross-validation
-
-A single train/test split (9 test subjects) gave ~88% accuracy, but with so few
-subjects the estimate is noisy. I combined all 30 subjects and evaluated with
-subject-wise 5-fold cross-validation (GroupKFold, no subject appears in both
-train and test).
-
-| Evaluation method | Accuracy |
+| Evaluation method | Accuracy (Random Forest, 66 features) |
 |---|---|
-| Random KFold (leaky: same subject in train and test) | 92.3% ± 0.9 |
-| Subject-wise GroupKFold (honest) | 85.5% ± 1.7 |
+| Random KFold (same subject in train and test; leaky) | 0.923 ± 0.009 |
+| Subject-wise GroupKFold (honest) | 0.855 ± 0.017 |
 
-The ~7-point gap quantifies data leakage from subject identity. Leave-one-subject-out
-evaluation shows accuracy varies noticeably between individuals:
+Windows from one person are highly correlated, so random splitting lets the model
+recognize people instead of activities. The ~7-point gap measures that leakage. The
+original single 21/9 subject split gave ~88% accuracy, a slightly optimistic draw
+compared with the cross-validated estimate.
+
+Leave-one-subject-out accuracy varies between individuals:
 
 ![LOSO accuracy per subject](reports/loso_per_subject_accuracy.png)
 
-![CV confusion matrix](reports/confusion_matrix_cv.png)
+[Add min / mean / max from `subject_acc.describe()` here.]
 
-## Model comparison (subject-wise 5-fold CV)
+## 2. Model comparison (66 features, subject-wise 5-fold CV, untuned)
 
-[paste results table here]
+| Model | Accuracy | Macro-F1 | SITTING F1 | STANDING F1 | Train (s/fold) | Inference (ms/window) |
+|---|---|---|---|---|---|---|
+| Dummy (most frequent) | 0.189 ± 0.011 | 0.053 ± 0.003 | 0 | 0 | 0 | 0.0001 |
+| Logistic Regression | 0.797 ± 0.022 | 0.800 ± 0.019 | 0.696 | 0.736 | 1.58 | 0.0018 |
+| SVM (RBF) | 0.798 ± 0.022 | 0.803 ± 0.019 | 0.667 | 0.739 | 1.03 | 0.4253 |
+| Random Forest | 0.855 ± 0.017 | 0.855 ± 0.019 | 0.810 | 0.843 | 1.34 | 0.0383 |
+| XGBoost | 0.877 ± 0.012 | 0.876 ± 0.014 | 0.834 | 0.865 | 5.42 | 0.0101 |
 
 ![Model comparison](reports/model_comparison.png)
 
-Dummy baseline confirms the features carry signal. Tree ensembles outperformed
-linear and kernel models; 
-XGBoost gave the best subject-independent performance (macro-F1 0.876 ± 0.014) and the best SITTING/STANDING F1, at the cost of the longest training time. Random Forest was a close second with simpler tuning. Logistic Regression reached 0.80 with negligible inference cost, indicating the engineered features carry most of the signal. Models were compared untuned with identical subject-wise folds; differences between XGBoost and Random Forest are within roughly one to two fold standard deviations.
+XGBoost performed best. Its lead over Random Forest (~2 points) is only one to two fold
+standard deviations, so treat the two as close. Linear and kernel models trailed the
+tree ensembles by about 6-8 points. Logistic Regression reaching 0.80 shows the
+engineered features carry much of the signal.
 
-## How to Reproduce
-1. Download UCI HAR Dataset from [link]
-2. `pip install -r requirements.txt`
-3. Run `src/train_model.py`
+## 3. Diagnosing errors and testing a fix
 
-## Future Work
-- Collect custom sensor data via ESP32 + MPU6050 and test model generalization 
-  to a different sensor/subject setup
-- Add gravity-axis orientation features to further address standing/sitting confusion
-- Explore deep learning approaches (1D-CNN/LSTM) as a comparison baseline
+The first confusion matrix showed SITTING vs STANDING as the main error pair. A
+classifier trained on those two classes alone ranked gyroscope features highest, but
+overall the baseline features discarded one physical cue: `body_acc` has gravity
+filtered out, so torso orientation was invisible.
+
+Hypothesis: gravity-orientation features from `total_acc` would help. The mean
+window tilt supports it (SITTING and STANDING differ by about 17 degrees in y-tilt):
+
+| | tilt_y (deg) | tilt_z (deg) |
+|---|---|---|
+| SITTING | 82.5 | 81.5 |
+| STANDING | 99.2 | 91.1 |
+
+Feature ablation (XGBoost, same subject-wise folds):
+
+| Config | Features | Macro-F1 | SITTING F1 | STANDING F1 | Sit<->Stand errors |
+|---|---|---|---|---|---|
+| Baseline | 66 | 0.876 ± 0.014 | 0.834 | 0.865 | 328 |
+| + Gravity | 72 | 0.913 ± 0.022 | 0.908 | 0.925 | 283 |
+| + Magnitude/Correlation | 76 | 0.896 ± 0.012 | 0.861 | 0.887 | 278 |
+| + Frequency | 96 | 0.904 ± 0.018 | 0.858 | 0.880 | 283 |
+| All new features | 112 | 0.944 ± 0.023 | 0.915 | 0.929 | 271 |
+
+Paired per-fold comparison (identical folds): macro-F1 improved in 5/5 folds, with
+gains of +0.052 to +0.100 (mean +0.068).
+
+![Baseline vs all features](reports/confusion_baseline_vs_all.png)
+
+Where the gains came from (counts read from the confusion matrices; approximate):
+laying confused with sitting/standing dropped from roughly 458 to roughly 27 windows,
+and confusion within the three walking classes roughly halved. Sitting vs standing
+improved only modestly (328 to 271 confused windows).
+
+## Limitations
+- Sitting vs standing remains the largest error source; a single waist sensor has limited
+  information about hip angle.
+- Gravity features assume the phone is worn the same way across subjects. A different
+  mounting would shift them.
+- Models were not hyperparameter-tuned. The feature ablation attributes gains to feature
+  groups, but I have not isolated individual features.
+- Results are from one dataset with 30 subjects.
+
+## Repository structure
+- `src/Features.py`: baseline 11-feature extractor (per-window)
+- `notebooks/exploration_and_modeling.py`: full analysis, including the extended
+  features and all experiments (run cell by cell; set `DATA_PATH` at the top)
+- `reports/`: plots and result tables
+- `train_features.csv`, `test_features.csv`: generated baseline feature tables
+
+## How to run
+1. Download the dataset and set `DATA_PATH` in the script.
+2. `pip install -r requirements.txt` (also needs `xgboost` and `tabulate`; add them to the file).
+3. Run `notebooks/exploration_and_modeling.py` cell by cell.
+
+## Next steps
+- Hyperparameter tuning with grouped cross-validation
+- Move the extended features into `src/` and add a training script and tests
+- Test generalization on self-collected ESP32 + MPU6050 data
