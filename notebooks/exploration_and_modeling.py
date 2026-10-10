@@ -575,3 +575,162 @@ plt.xticks(rotation=15)
 plt.tight_layout()
 plt.savefig("sensor-activity-classifier/reports/model_comparison.png", dpi=150, bbox_inches="tight")
 plt.show()
+
+# %% Load raw signals, train rows first then test rows (matches full_df order)
+SIGNALS = ['body_acc_x', 'body_acc_y', 'body_acc_z',
+           'body_gyro_x', 'body_gyro_y', 'body_gyro_z',
+           'total_acc_x', 'total_acc_y', 'total_acc_z']
+
+raw = {}
+for sig in SIGNALS:
+    tr = pd.read_csv(DATA_PATH + rf"\train\Inertial Signals\{sig}_train.txt", sep=r"\s+", header=None).values
+    te = pd.read_csv(DATA_PATH + rf"\test\Inertial Signals\{sig}_test.txt", sep=r"\s+", header=None).values
+    raw[sig] = np.vstack([tr, te])
+
+print(raw['total_acc_x'].shape)
+assert raw['total_acc_x'].shape[0] == len(full_df), "Row count mismatch with full_df"
+
+# %% Group 1: gravity orientation features from total_acc
+def gravity_features(raw):
+    g = np.stack([raw['total_acc_x'].mean(axis=1),
+                  raw['total_acc_y'].mean(axis=1),
+                  raw['total_acc_z'].mean(axis=1)], axis=1)       # window-average gravity vector
+    norm = np.linalg.norm(g, axis=1, keepdims=True)
+    angles = np.degrees(np.arccos(np.clip(g / norm, -1, 1)))      # angle between gravity and each axis
+    return pd.DataFrame({
+        'grav_x': g[:, 0], 'grav_y': g[:, 1], 'grav_z': g[:, 2],
+        'tilt_x_deg': angles[:, 0], 'tilt_y_deg': angles[:, 1], 'tilt_z_deg': angles[:, 2],
+    })
+
+grav_df = gravity_features(raw)
+print(grav_df.groupby(y.values).mean().round(3))
+
+# %% Group 2: signal magnitude and axis correlation features
+def row_corr(a, b):
+    a = a - a.mean(axis=1, keepdims=True)
+    b = b - b.mean(axis=1, keepdims=True)
+    den = np.sqrt((a ** 2).sum(axis=1) * (b ** 2).sum(axis=1))
+    safe = np.where(den > 0, den, 1.0)
+    return np.where(den > 0, (a * b).sum(axis=1) / safe, 0.0)
+
+def magnitude_corr_features(raw):
+    out = {}
+    for name, prefix in [('acc', 'body_acc'), ('gyro', 'body_gyro')]:
+        arr = np.stack([raw[f'{prefix}_{a}'] for a in 'xyz'], axis=2)   # (n, 128, 3)
+        mag = np.linalg.norm(arr, axis=2)
+        out[f'{name}_mag_mean'] = mag.mean(axis=1)
+        out[f'{name}_mag_std'] = mag.std(axis=1)
+        for i, j, lab in [(0, 1, 'xy'), (0, 2, 'xz'), (1, 2, 'yz')]:
+            out[f'{name}_corr_{lab}'] = row_corr(arr[:, :, i], arr[:, :, j])
+    return pd.DataFrame(out)
+
+mag_df = magnitude_corr_features(raw)
+print(mag_df.shape)
+
+# %% Group 3: frequency features (Hz-aware)
+FS = 50  # sampling rate in Hz
+BODY_SIGNALS = ['body_acc_x', 'body_acc_y', 'body_acc_z',
+                'body_gyro_x', 'body_gyro_y', 'body_gyro_z']
+
+def frequency_features(raw):
+    out = {}
+    freqs = np.fft.rfftfreq(128, d=1 / FS)                 # frequency of each FFT bin in Hz
+    bands = {'low_0.1-1Hz': (0.1, 1), 'mid_1-3Hz': (1, 3), 'high_3-10Hz': (3, 10)}
+    for sig in BODY_SIGNALS:
+        x = raw[sig] - raw[sig].mean(axis=1, keepdims=True)
+        P = np.abs(np.fft.rfft(x, axis=1)) ** 2             # power spectrum
+        total = P.sum(axis=1) + 1e-12
+        p = P / total[:, None]
+
+        out[f'{sig}_dom_freq_hz'] = freqs[P[:, 1:].argmax(axis=1) + 1]       # skip DC bin
+        out[f'{sig}_spec_entropy'] = -(p * np.log2(p + 1e-12)).sum(axis=1) / np.log2(P.shape[1])
+        for label, (lo, hi) in bands.items():
+            m = (freqs >= lo) & (freqs < hi)
+            out[f'{sig}_band_{label}'] = P[:, m].sum(axis=1) / total
+    return pd.DataFrame(out)
+
+freq_df = frequency_features(raw)
+print(freq_df.shape)
+
+# %% Ablation: add feature groups and measure the effect with XGBoost
+from sklearn.metrics import confusion_matrix
+
+def evaluate_config(name, feats):
+    feats = np.nan_to_num(feats.reset_index(drop=True))
+    feats = pd.DataFrame(feats)
+    accs, f1s, all_true, all_pred = [], [], [], []
+    for train_idx, test_idx in splits:
+        model = XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.1,
+                              random_state=42, n_jobs=-1, eval_metric="mlogloss")
+        model.fit(feats.iloc[train_idx], y_enc[train_idx])
+        pred = model.predict(feats.iloc[test_idx])
+        accs.append(accuracy_score(y_enc[test_idx], pred))
+        f1s.append(f1_score(y_enc[test_idx], pred, average="macro"))
+        all_true.extend(y_enc[test_idx]); all_pred.extend(pred)
+
+    per_class = f1_score(all_true, all_pred, average=None)
+    cm = confusion_matrix(all_true, all_pred)
+    return {
+        "Config": name,
+        "N features": feats.shape[1],
+        "Accuracy": f"{np.mean(accs):.3f} ± {np.std(accs):.3f}",
+        "Macro-F1": f"{np.mean(f1s):.3f} ± {np.std(f1s):.3f}",
+        "SITTING F1": round(per_class[sit_id], 3),
+        "STANDING F1": round(per_class[stand_id], 3),
+        "Sit<->Stand errors": int(cm[sit_id, stand_id] + cm[stand_id, sit_id]),
+    }
+
+base = X.reset_index(drop=True)
+configs = {
+    "Baseline (66)": base,
+    "+ Gravity": pd.concat([base, grav_df], axis=1),
+    "+ Magnitude/Corr": pd.concat([base, mag_df], axis=1),
+    "+ Frequency": pd.concat([base, freq_df], axis=1),
+    "All new features": pd.concat([base, grav_df, mag_df, freq_df], axis=1),
+}
+
+ablation = []
+for name, feats in configs.items():
+    ablation.append(evaluate_config(name, feats))
+    print("Finished", name)
+
+ablation_df = pd.DataFrame(ablation)
+print(ablation_df.to_markdown(index=False))
+
+# %% Save ablation table
+ablation_df.to_csv("sensor-activity-classifier/reports/feature_ablation.csv", index=False)
+
+# %% CV predictions + per-fold macro-F1 for a feature set
+def cv_predict(feats):
+    feats = pd.DataFrame(np.nan_to_num(feats.reset_index(drop=True)))
+    fold_f1, true, pred_all = [], [], []
+    for train_idx, test_idx in splits:
+        model = XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.1,
+                              random_state=42, n_jobs=-1, eval_metric="mlogloss")
+        model.fit(feats.iloc[train_idx], y_enc[train_idx])
+        pred = model.predict(feats.iloc[test_idx])
+        fold_f1.append(f1_score(y_enc[test_idx], pred, average="macro"))
+        true.extend(y_enc[test_idx]); pred_all.extend(pred)
+    return np.array(true), np.array(pred_all), np.array(fold_f1)
+
+t_base, p_base, f_base = cv_predict(configs["Baseline (66)"])
+t_all, p_all, f_all = cv_predict(configs["All new features"])
+
+# Paired per-fold comparison (same folds for both)
+diff = f_all - f_base
+print("Per-fold macro-F1 gain:", np.round(diff, 3))
+print(f"Mean gain {diff.mean():.3f}; improved in {(diff > 0).sum()}/5 folds")
+
+# %% Side-by-side confusion matrices: baseline vs all features
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+for ax, (t, p, title) in zip(axes, [(t_base, p_base, "Baseline (66 features)"),
+                                     (t_all, p_all, "All features (112)")]):
+    sns.heatmap(confusion_matrix(t, p), annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names, ax=ax, cbar=False)
+    ax.set_title(title)
+    ax.set_xlabel("Predicted"); ax.set_ylabel("Actual")
+    ax.tick_params(axis='x', rotation=45)
+plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/confusion_baseline_vs_all.png", dpi=150, bbox_inches="tight")
+plt.show()
+

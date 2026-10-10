@@ -1,0 +1,6 @@
+Config,N features,Accuracy,Macro-F1,SITTING F1,STANDING F1,Sit<->Stand errors
+Baseline (66),66,0.877 ± 0.012,0.876 ± 0.014,0.834,0.865,328
++ Gravity,72,0.918 ± 0.020,0.913 ± 0.022,0.908,0.925,283
++ Magnitude/Corr,76,0.897 ± 0.010,0.896 ± 0.012,0.861,0.887,278
++ Frequency,96,0.903 ± 0.016,0.904 ± 0.018,0.858,0.88,283
+All new features,112,0.946 ± 0.021,0.944 ± 0.023,0.915,0.929,271
