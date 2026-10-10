@@ -55,6 +55,16 @@ evaluation shows accuracy varies noticeably between individuals:
 
 ![CV confusion matrix](reports/confusion_matrix_cv.png)
 
+## Model comparison (subject-wise 5-fold CV)
+
+[paste results table here]
+
+![Model comparison](reports/model_comparison.png)
+
+Dummy baseline confirms the features carry signal. Tree ensembles outperformed
+linear and kernel models; [state the winner and whether the gap exceeds fold-to-fold
+variation].
+
 ## How to Reproduce
 1. Download UCI HAR Dataset from [link]
 2. `pip install -r requirements.txt`
