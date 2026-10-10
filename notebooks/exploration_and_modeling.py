@@ -470,3 +470,108 @@ plt.title("Confusion Matrix — Subject-wise 5-Fold CV (all folds combined)")
 plt.tight_layout()
 plt.savefig("sensor-activity-classifier/reports/confusion_matrix_cv.png", dpi=150, bbox_inches="tight")
 plt.show()
+
+# %% Imports for model comparison
+import time
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.dummy import DummyClassifier
+from sklearn.model_selection import GroupKFold
+from sklearn.metrics import accuracy_score, f1_score
+from xgboost import XGBClassifier
+
+
+# %% Encode labels and create ONE set of folds reused by every model
+le = LabelEncoder()
+y_enc = le.fit_transform(y)          # y from the full_df step; strings -> integers
+class_names = list(le.classes_)
+print(class_names)
+
+gkf = GroupKFold(n_splits=5)
+splits = list(gkf.split(X, y_enc, groups))   # computed once, reused below
+print("Number of folds:", len(splits))
+
+# %% Define the models (Dummy first, as the "no learning" baseline)
+models = {
+    "Dummy (most frequent)": DummyClassifier(strategy="most_frequent"),
+    "Logistic Regression": Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(max_iter=2000, random_state=42))
+    ]),
+    "SVM (RBF)": Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", SVC(kernel="rbf", C=1.0, random_state=42))
+    ]),
+    "Random Forest": RandomForestClassifier(
+        n_estimators=200, random_state=42, n_jobs=-1),
+    "XGBoost": XGBClassifier(
+        n_estimators=300, max_depth=6, learning_rate=0.1,
+        random_state=42, n_jobs=-1, eval_metric="mlogloss"),
+}
+
+# %% Evaluate every model on the same subject-wise folds
+sit_id = class_names.index("SITTING")
+stand_id = class_names.index("STANDING")
+
+results = []
+cv_predictions = {}
+
+for name, model in models.items():
+    accs, f1s, train_times, infer_times = [], [], [], []
+    all_true, all_pred = [], []
+
+    for train_idx, test_idx in splits:
+        X_tr, X_te = X.iloc[train_idx], X.iloc[test_idx]
+        y_tr, y_te = y_enc[train_idx], y_enc[test_idx]
+
+        t0 = time.perf_counter()
+        model.fit(X_tr, y_tr)
+        train_times.append(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        pred = model.predict(X_te)
+        infer_times.append((time.perf_counter() - t0) / len(X_te) * 1000)  # ms per window
+
+        accs.append(accuracy_score(y_te, pred))
+        f1s.append(f1_score(y_te, pred, average="macro", zero_division=0))
+        all_true.extend(y_te)
+        all_pred.extend(pred)
+
+    per_class_f1 = f1_score(all_true, all_pred, average=None, zero_division=0)
+
+    results.append({
+        "Model": name,
+        "Accuracy": f"{np.mean(accs):.3f} ± {np.std(accs):.3f}",
+        "Macro-F1": f"{np.mean(f1s):.3f} ± {np.std(f1s):.3f}",
+        "SITTING F1": round(per_class_f1[sit_id], 3),
+        "STANDING F1": round(per_class_f1[stand_id], 3),
+        "Train time (s/fold)": round(np.mean(train_times), 2),
+        "Inference (ms/window)": round(np.mean(infer_times), 4),
+    })
+    cv_predictions[name] = (all_true, all_pred)
+    print(f"Finished {name}")
+
+results_df = pd.DataFrame(results)
+print(results_df.to_string(index=False))
+
+# %% Save comparison table
+results_df.to_csv("sensor-activity-classifier/reports/model_comparison.csv", index=False)
+print(results_df.to_markdown(index=False))
+
+# %% Bar chart: macro-F1 by model
+plot_df = pd.DataFrame({
+    "Model": [r["Model"] for r in results],
+    "Macro-F1": [float(r["Macro-F1"].split(" ")[0]) for r in results],
+})
+plt.figure(figsize=(9, 4))
+plt.bar(plot_df["Model"], plot_df["Macro-F1"])
+plt.ylim(0, 1.0)
+plt.ylabel("Macro-F1 (subject-wise 5-fold CV)")
+plt.title("Model comparison")
+plt.xticks(rotation=15)
+plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/model_comparison.png", dpi=150, bbox_inches="tight")
+plt.show()
