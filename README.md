@@ -62,8 +62,8 @@ evaluation shows accuracy varies noticeably between individuals:
 ![Model comparison](reports/model_comparison.png)
 
 Dummy baseline confirms the features carry signal. Tree ensembles outperformed
-linear and kernel models; [state the winner and whether the gap exceeds fold-to-fold
-variation].
+linear and kernel models; 
+XGBoost gave the best subject-independent performance (macro-F1 0.876 ± 0.014) and the best SITTING/STANDING F1, at the cost of the longest training time. Random Forest was a close second with simpler tuning. Logistic Regression reached 0.80 with negligible inference cost, indicating the engineered features carry most of the signal. Models were compared untuned with identical subject-wise folds; differences between XGBoost and Random Forest are within roughly one to two fold standard deviations.
 
 ## How to Reproduce
 1. Download UCI HAR Dataset from [link]
