@@ -36,6 +36,25 @@ ranked gyroscope-derived features (particularly body_gyro_x_std) as overwhelming
 the most important, while accelerometer features — dominant in the overall 
 6-class model — contributed comparatively little to this specific distinction.
 
+## Evaluation: subject-independent cross-validation
+
+A single train/test split (9 test subjects) gave ~88% accuracy, but with so few
+subjects the estimate is noisy. I combined all 30 subjects and evaluated with
+subject-wise 5-fold cross-validation (GroupKFold, no subject appears in both
+train and test).
+
+| Evaluation method | Accuracy |
+|---|---|
+| Random KFold (leaky: same subject in train and test) | 92.3% ± 0.9 |
+| Subject-wise GroupKFold (honest) | 85.5% ± 1.7 |
+
+The ~7-point gap quantifies data leakage from subject identity. Leave-one-subject-out
+evaluation shows accuracy varies noticeably between individuals:
+
+![LOSO accuracy per subject](reports/loso_per_subject_accuracy.png)
+
+![CV confusion matrix](reports/confusion_matrix_cv.png)
+
 ## How to Reproduce
 1. Download UCI HAR Dataset from [link]
 2. `pip install -r requirements.txt`
