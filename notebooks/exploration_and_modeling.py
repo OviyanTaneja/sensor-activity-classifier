@@ -374,3 +374,99 @@ plt.title("Top Features Specifically Separating STANDING vs SITTING")
 plt.tight_layout()
 plt.savefig("sensor-activity-classifier/reports/feature_importance_standing_vs_sitting.png", dpi=150, bbox_inches="tight")
 plt.show()
+
+# %% Combine train and test features into one dataset (30 subjects)
+full_df = pd.concat([feature_df, feature_df_test], ignore_index=True)
+
+X = full_df[feature_cols]
+y = full_df['activity']
+groups = full_df['subject']
+
+print("Total windows:", X.shape[0])
+print("Unique subjects:", groups.nunique())
+
+# %% Subject-wise 5-fold cross-validation
+from sklearn.model_selection import GroupKFold
+from sklearn.metrics import accuracy_score, f1_score
+
+gkf = GroupKFold(n_splits=5)
+
+fold_acc, fold_f1 = [], []
+all_true, all_pred = [], []
+
+for fold, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups)):
+    # Safety check: no subject may appear in both train and test
+    train_subjects = set(groups.iloc[train_idx])
+    test_subjects = set(groups.iloc[test_idx])
+    assert train_subjects.isdisjoint(test_subjects), "Subject leakage!"
+
+    model = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+    model.fit(X.iloc[train_idx], y.iloc[train_idx])
+    pred = model.predict(X.iloc[test_idx])
+
+    acc = accuracy_score(y.iloc[test_idx], pred)
+    f1 = f1_score(y.iloc[test_idx], pred, average='macro')
+    fold_acc.append(acc)
+    fold_f1.append(f1)
+    all_true.extend(y.iloc[test_idx])
+    all_pred.extend(pred)
+
+    print(f"Fold {fold+1}: test subjects={sorted(test_subjects)}  acc={acc:.3f}  macro-F1={f1:.3f}")
+
+print()
+print(f"Accuracy : {np.mean(fold_acc):.3f} ± {np.std(fold_acc):.3f}")
+print(f"Macro-F1 : {np.mean(fold_f1):.3f} ± {np.std(fold_f1):.3f}")
+
+# %% Compare: random (leaky) KFold vs subject-wise GroupKFold
+from sklearn.model_selection import KFold
+
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+leaky_acc = []
+
+for train_idx, test_idx in kf.split(X):
+    model = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+    model.fit(X.iloc[train_idx], y.iloc[train_idx])
+    leaky_acc.append(accuracy_score(y.iloc[test_idx], model.predict(X.iloc[test_idx])))
+
+print(f"Random split accuracy       : {np.mean(leaky_acc):.3f} ± {np.std(leaky_acc):.3f}  (leaky)")
+print(f"Subject-wise split accuracy : {np.mean(fold_acc):.3f} ± {np.std(fold_acc):.3f}  (honest)")
+
+# %% Leave-One-Subject-Out: accuracy per subject
+from sklearn.model_selection import LeaveOneGroupOut
+
+logo = LeaveOneGroupOut()
+subject_acc = {}
+
+for train_idx, test_idx in logo.split(X, y, groups):
+    subj = groups.iloc[test_idx].iloc[0]
+    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+    model.fit(X.iloc[train_idx], y.iloc[train_idx])
+    subject_acc[subj] = accuracy_score(y.iloc[test_idx], model.predict(X.iloc[test_idx]))
+
+subject_acc = pd.Series(subject_acc).sort_index()
+print(subject_acc.describe())
+
+plt.figure(figsize=(12, 4))
+subject_acc.plot(kind='bar')
+plt.xlabel("Held-out subject")
+plt.ylabel("Accuracy")
+plt.title("Leave-One-Subject-Out Accuracy per Subject")
+plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/loso_per_subject_accuracy.png", dpi=150, bbox_inches="tight")
+plt.show()
+
+# %% Confusion matrix aggregated across all CV folds
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+labels = sorted(y.unique())
+cm_cv = confusion_matrix(all_true, all_pred, labels=labels)
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_cv, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.title("Confusion Matrix — Subject-wise 5-Fold CV (all folds combined)")
+plt.tight_layout()
+plt.savefig("sensor-activity-classifier/reports/confusion_matrix_cv.png", dpi=150, bbox_inches="tight")
+plt.show()
