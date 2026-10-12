@@ -734,3 +734,72 @@ plt.tight_layout()
 plt.savefig("sensor-activity-classifier/reports/confusion_baseline_vs_all.png", dpi=150, bbox_inches="tight")
 plt.show()
 
+# %% Tuning setup
+from sklearn.model_selection import RandomizedSearchCV, GroupKFold
+from scipy.stats import randint, uniform
+
+X_all = pd.DataFrame(np.nan_to_num(configs["All new features"].reset_index(drop=True)))
+X_all.columns = configs["All new features"].columns   # keep names for importance later
+
+param_dist = {
+    "n_estimators": randint(150, 500),
+    "max_depth": randint(3, 9),
+    "learning_rate": uniform(0.03, 0.17),     # 0.03 to 0.20
+    "subsample": uniform(0.6, 0.4),           # 0.6 to 1.0
+    "colsample_bytree": uniform(0.5, 0.5),    # 0.5 to 1.0
+    "min_child_weight": randint(1, 8),
+    "reg_lambda": uniform(0.5, 4.5),          # 0.5 to 5.0
+}
+
+# %% Nested CV: inner search picks settings, outer folds report the score
+import time
+
+outer_acc, outer_f1, best_params_per_fold = [], [], []
+all_true_t, all_pred_t = [], []
+t_start = time.perf_counter()
+
+for fold, (train_idx, test_idx) in enumerate(splits):
+    X_tr, X_te = X_all.iloc[train_idx], X_all.iloc[test_idx]
+    y_tr, y_te = y_enc[train_idx], y_enc[test_idx]
+    groups_tr = groups.iloc[train_idx].values
+
+    inner_cv = list(GroupKFold(n_splits=3).split(X_tr, y_tr, groups_tr))
+    search = RandomizedSearchCV(
+        XGBClassifier(random_state=42, n_jobs=-1, eval_metric="mlogloss"),
+        param_distributions=param_dist,
+        n_iter=12,
+        scoring="f1_macro",
+        cv=inner_cv,
+        random_state=42,
+        n_jobs=1,
+    )
+    search.fit(X_tr, y_tr)
+
+    pred = search.predict(X_te)
+    outer_acc.append(accuracy_score(y_te, pred))
+    outer_f1.append(f1_score(y_te, pred, average="macro"))
+    best_params_per_fold.append(search.best_params_)
+    all_true_t.extend(y_te); all_pred_t.extend(pred)
+
+    print(f"Fold {fold+1}: macro-F1={outer_f1[-1]:.3f}  "
+          f"(inner best CV={search.best_score_:.3f})  "
+          f"elapsed {(time.perf_counter()-t_start)/60:.1f} min")
+
+print()
+print(f"Tuned XGBoost accuracy: {np.mean(outer_acc):.3f} ± {np.std(outer_acc):.3f}")
+print(f"Tuned XGBoost macro-F1: {np.mean(outer_f1):.3f} ± {np.std(outer_f1):.3f}")
+
+# %% Paired comparison with untuned XGBoost on the same folds
+tuned_f1 = np.array(outer_f1)
+untuned_f1 = f_all            # per-fold macro-F1 from the earlier cv_predict run
+
+diff = tuned_f1 - untuned_f1
+print("Per-fold gain from tuning:", np.round(diff, 3))
+print(f"Mean gain {diff.mean():.3f}; improved in {(diff > 0).sum()}/5 folds")
+
+print("\nChosen settings per fold:")
+print(pd.DataFrame(best_params_per_fold).round(3))
+
+# %% Save tuning results
+pd.DataFrame(best_params_per_fold).to_csv(
+    "sensor-activity-classifier/reports/tuned_params_per_fold.csv", index=False)
