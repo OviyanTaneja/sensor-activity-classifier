@@ -90,6 +90,13 @@ laying confused with sitting/standing dropped from roughly 458 to roughly 27 win
 and confusion within the three walking classes roughly halved. Sitting vs standing
 improved only modestly (328 to 271 confused windows).
 
+## Hyperparameter tuning
+Nested CV (inner 3-fold subject-wise random search, 12 candidates, outer folds as before)
+gave macro-F1 0.946 ± 0.025 vs 0.944 ± 0.023 untuned. Per-fold differences ranged from
+-0.004 to +0.006 (improved in 3/5 folds), so tuning produced no meaningful gain;
+performance is driven by the features, not the settings. The untuned configuration is
+reported as the headline result.
+
 ## Limitations
 - Sitting vs standing remains the largest error source; a single waist sensor has limited
   information about hip angle.
